@@ -1,0 +1,212 @@
+{
+  "provider": "groq",
+  "model": "qwen/qwen3.8-27b",
+  "search": "fixture",
+  "mode": "hosted",
+  "disclaimer": "Hosted run with provider groq and search mode fixture. Results depend on the model and, when search is live, on the public web. Success rate ignores tasks that stayed rate-limited after retries; those are not model failures.",
+  "generated_at": "2026-11-08T03:56:06Z",
+  "partial": false,
+  "success_rate": 0.9333333333333333,
+  "passed": 14,
+  "total": 15,
+  "scored": 15,
+  "rate_limited": 0,
+  "average_steps": 2.7333333333333334,
+  "average_latency_ms": 16658.89,
+  "categories": {
+    "math": {
+      "passed": 5,
+      "total": 5
+    },
+    "code": {
+      "passed": 4,
+      "total": 5
+    },
+    "factual": {
+      "passed": 5,
+      "total": 5
+    }
+  },
+  "tasks": [
+    {
+      "id": "math-multiply-add",
+      "category": "math",
+      "question": "What is (17 * 23) + 5?",
+      "expectation": "396",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 735.96,
+      "stop_reason": "reflected",
+      "answer": "(17 \u00d7 23) + 5 = 396."
+    },
+    {
+      "id": "math-power",
+      "category": "math",
+      "question": "What is 2 ** 10?",
+      "expectation": "1024",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 664.86,
+      "stop_reason": "reflected",
+      "answer": "2 ** 10 = 1024."
+    },
+    {
+      "id": "math-sqrt",
+      "category": "math",
+      "question": "What is the square root of 144?",
+      "expectation": "12",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 6031.77,
+      "stop_reason": "reflected",
+      "answer": "The square root of 144 is 12."
+    },
+    {
+      "id": "math-parentheses",
+      "category": "math",
+      "question": "What is ((8 + 2) * 3) - 4?",
+      "expectation": "26",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22519.65,
+      "stop_reason": "reflected",
+      "answer": "The result is 26."
+    },
+    {
+      "id": "math-division",
+      "category": "math",
+      "question": "What is 100 / 4 + 7?",
+      "expectation": "32",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22460.02,
+      "stop_reason": "reflected",
+      "answer": "100 / 4 + 7 = 32."
+    },
+    {
+      "id": "code-sum-squares",
+      "category": "code",
+      "question": "Use Python to compute the sum of squares from 1 to 10.",
+      "expectation": "385",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22197.37,
+      "stop_reason": "reflected",
+      "answer": "The sum of squares from 1 to 10 is 385."
+    },
+    {
+      "id": "code-fibonacci",
+      "category": "code",
+      "question": "Use Python to compute the 10th Fibonacci number. The sequence starts 1, 1, 2, 3, 5.",
+      "expectation": "55",
+      "passed": false,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 23611.08,
+      "stop_reason": "reflected",
+      "answer": "The 10th Fibonacci number (with the sequence starting 1, 1, 2, 3, 5, ...) is 89."
+    },
+    {
+      "id": "code-factorial",
+      "category": "code",
+      "question": "Use Python to compute the factorial of 7.",
+      "expectation": "5040",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22412.91,
+      "stop_reason": "reflected",
+      "answer": "The factorial of 7 is 5040."
+    },
+    {
+      "id": "code-primes",
+      "category": "code",
+      "question": "Use Python to count how many primes are strictly below 50.",
+      "expectation": "15",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 26147.14,
+      "stop_reason": "reflected",
+      "answer": "There are 15 primes strictly below 50: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, and 47."
+    },
+    {
+      "id": "code-reverse",
+      "category": "code",
+      "question": "Use Python to reverse the string \"agentic\" and print it.",
+      "expectation": "citnega",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22309.44,
+      "stop_reason": "reflected",
+      "answer": "The reversed string is **citnega**."
+    },
+    {
+      "id": "fact-france-capital",
+      "category": "factual",
+      "question": "What is the capital of France?",
+      "expectation": "contains Paris",
+      "passed": true,
+      "verified": true,
+      "steps": 3,
+      "latency_ms": 22377.89,
+      "stop_reason": "reflected",
+      "answer": "The capital of France is Paris."
+    },
+    {
+      "id": "fact-moon-landing",
+      "category": "factual",
+      "question": "In what year was the first crewed Moon landing?",
+      "expectation": "contains 1969",
+      "passed": true,
+      "verified": true,
+      "steps": 2,
+      "latency_ms": 14674.84,
+      "stop_reason": "reflected",
+      "answer": "1969 \u2014 the first crewed Moon landing was Apollo 11, when Neil Armstrong and Buzz Aldrin walked on the Moon on July 20, 1969."
+    },
+    {
+      "id": "fact-gold-symbol",
+      "category": "factual",
+      "question": "What is the chemical symbol for gold?",
+      "expectation": "word Au",
+      "passed": true,
+      "verified": true,
+      "steps": 2,
+      "latency_ms": 14538.07,
+      "stop_reason": "reflected",
+      "answer": "Au"
+    },
+    {
+      "id": "fact-gatsby-author",
+      "category": "factual",
+      "question": "Who wrote The Great Gatsby?",
+      "expectation": "contains Fitzgerald",
+      "passed": true,
+      "verified": true,
+      "steps": 2,
+      "latency_ms": 14555.98,
+      "stop_reason": "reflected",
+      "answer": "F. Scott Fitzgerald wrote *The Great Gatsby*, published in 1925."
+    },
+    {
+      "id": "fact-water-boiling",
+      "category": "factual",
+      "question": "What is the boiling point of water at sea level in Celsius?",
+      "expectation": "100 degrees Celsius",
+      "passed": true,
+      "verified": true,
+      "steps": 2,
+      "latency_ms": 14646.44,
+      "stop_reason": "reflected",
+      "answer": "The boiling point of water at sea level is 100 degrees Celsius (212 degrees Fahrenheit)."
+    }
+  ]
+}

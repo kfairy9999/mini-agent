@@ -12,6 +12,9 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
-reports/
+reports/*
+!reports/groq/
+!reports/groq/eval_results.md
+!reports/groq/eval_results.json
 *.log
 .DS_Store

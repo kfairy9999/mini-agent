@@ -1,8 +1,10 @@
 # mini-agent
 
-A small tool-calling agent you can read in an afternoon. The model plans and asks for tools. This process is the only thing that runs them. A draft answer is not returned until a self-check accepts or revises it. There is a step budget, an offline mock that needs no API key, and a fixed eval so a change to the loop has a number attached.
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)](.github/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](pyproject.toml)
 
-Kevin Fairley built it as a portfolio piece for agentic AI and AI research roles: the loop, the tools, and the measurement are all small enough to defend in an interview.
+mini-agent is a Python 3.11 tool-calling loop Kevin Fairley wrote for agentic AI roles. The model may ask for a calculator, a short Python program, or a web search; this process is the only thing that runs the tool; and a draft is not returned until a self-check accepts or revises it. The same loop runs offline with no key, and a 15-task eval has a measured Groq result: `qwen/qwen3.8-27b`, fixture search, 14 of 15 on 2026-11-08.
 
 ## Architecture
 
@@ -54,30 +56,27 @@ With no API key, `mini-agent` uses the deterministic mock and says so. `mini-age
 
 The same entry points work as `python -m mini_agent` and `python -m mini_agent.eval`.
 
-### A trace
+### A trace from the Groq run
 
-`mini-agent --mock "What is (17 * 23) + 5?"` prints the plan, the observation, the draft, and the self-check:
+`math-multiply-add` on `qwen/qwen3.8-27b` (fixture search, 2026-11-08T03:56:06Z) finished in 3 steps. The self-check accepted the draft (`verified: true`, `stop_reason: reflected`). The recorded answer is `(17 × 23) + 5 = 396.` Latency was 735.96 ms, before the free-tier token bucket filled. The eval file stores that outcome, not the tool arguments or the reflection notes.
 
 ```text
+qwen/qwen3.8-27b  ·  math-multiply-add  ·  735.96 ms
+
 step 1  act
-The question is arithmetic, so I'll evaluate it with the calculator.
 call calculator
-{"expression": "(17 * 23) + 5"}
-observe
-396
 
 step 2  draft
-396
+(17 × 23) + 5 = 396.
 
 step 3  reflect  accept
-The draft is grounded in the latest tool observation.
 
 answer
-396
-3 steps · reflected
+(17 × 23) + 5 = 396.
+3 steps · reflected · verified
 ```
 
-`--json` prints the same run as a single object. `--max-steps` is the budget (default 8). Exit code 0 means the self-check finished. Exit code 2 means the budget won.
+`mini-agent --mock "What is (17 * 23) + 5?"` prints the same three-step shape with no key. `--json` prints one object. `--max-steps` is the budget (default 8). Exit code 0 means the self-check finished. Exit code 2 means the budget won.
 
 ## Providers
 
@@ -193,21 +192,62 @@ The mock does not look up these labels. Arithmetic answers are whatever the calc
 
 ### Groq results
 
-Not measured. Do not paste the mock table here.
+Real hosted run. Not the mock table above.
+
+| | |
+| --- | --- |
+| Model | `qwen/qwen3.8-27b` |
+| Provider | groq |
+| Search | fixture |
+| Generated | 2026-11-08T03:56:06Z |
+| Passed | 14 / 15 |
+| Rate limited | 0 |
+| Scored | 15 |
+| Success rate | 93.3% |
+| Average steps | 2.73 |
+| Average latency | 16,658.89 ms (about 16.7 s) |
+
+| Category | Passed | Total |
+| --- | --- | --- |
+| math | 5 | 5 |
+| code | 4 | 5 |
+| factual | 5 | 5 |
+
+The committed artifacts are [reports/groq/eval_results.md](reports/groq/eval_results.md) and [reports/groq/eval_results.json](reports/groq/eval_results.json). Figures above are copied from those files.
+
+Average latency is dominated by free-tier rate-limit waits, not model speed. The first two tasks finished in under a second, before the token bucket filled: `math-multiply-add` at 735.96 ms and `math-power` at 664.86 ms. The next row, `math-sqrt`, is 6,031.77 ms, and later tasks sit between about 14 s and 26 s.
+
+#### Failure analysis
+
+`code-fibonacci` is the one miss. The question asks for the 10th Fibonacci number in the sequence that starts 1, 1, 2, 3, 5, and the checker expects 55. The model answered:
+
+> The 10th Fibonacci number (with the sequence starting 1, 1, 2, 3, 5, ...) is 89.
+
+89 is the 11th term of that sequence (1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89), so the index is off by one. The task still completed the self-check: `verified` is true, `stop_reason` is `reflected`, and it took 3 steps. The loop accepted a wrong draft. A useful next check is a verifier that re-runs the program, or that checks the answer against the indexing convention the question stated.
+
+To repeat the run:
 
 ```bash
 export GROQ_API_KEY="gsk_..."
-
-mini-agent "What is (17 * 23) + 5?"
-
-# Fixture search keeps factual tasks on the offline corpus.
-# The default model is qwen/qwen3.8-27b. Do not set llama-3.3-70b-versatile.
+unset LLM_MODEL
 mini-agent-eval --provider groq --search fixture --output-dir reports/groq
 ```
 
-`LLM_API_KEY` may be set instead of `GROQ_API_KEY`. After a real run, paste the summary from `reports/groq/eval_results.md` under this heading. Live snippets will not always contain the phrase the checker looks for, so a hosted score below 100% is a real result, not a failed install.
+`LLM_API_KEY` may be set instead of `GROQ_API_KEY`. Gemini and OpenAI use the same command with `--provider gemini` or `--provider openai` and the matching key.
 
-Gemini and OpenAI use the same eval command with `--provider gemini` or `--provider openai` and the matching key.
+## What I learned
+
+These are the failures from bringing the loop up on a real Groq free-tier key, and what changed because of them.
+
+**Cloudflare blocked the default User-Agent.** `api.groq.com` returned 403, error 1010, for urllib's `Python-urllib` agent. A normal `User-Agent: mini-agent/0.1.0` header got through. The client was fine; the request did not look like a browserless library.
+
+**The default model was already gone.** `llama-3.3-70b-versatile` returned 404. The key's model list included `qwen/qwen3.8-27b`, which tool-calls, so that is the Groq preset. A preset has to track the provider's live catalog, not a model id remembered from an older doc.
+
+**Free-tier 429s are part of the eval, not a wrong answer.** After two tasks every call was rate-limited on input tokens per minute. The client retries using `Retry-After` or the "try again in" line, then keeps that gap for later calls. The eval stays serial, and a task that never gets a completion is marked rate-limited and left out of the success rate. This run had zero of those; the waits show up as latency instead.
+
+**The backoff read the wrong bucket.** A token-limit 429 still carried `x-ratelimit-reset-requests: 38m52.8s` beside `x-ratelimit-reset-tokens: 134ms`. Taking the longest hint turned a millisecond token reset into a 60-second sleep before every later call, and one run sat in sleep for 28 minutes. The wait now follows the explicit retry hint, or the reset header for the bucket the error names. One sleep is capped by `LLM_MAX_WAIT` (default 60 seconds).
+
+**The first partial checkpoint crashed the hosted run.** After `math-multiply-add` passed, writing the in-progress report raised `TypeError` in `"\n".join`: the hosted disclaimer `return` was indented inside the mock branch, so a Groq report stored `disclaimer=None`. Mock tests never rendered that path. The hosted string is returned for every other provider, missing fields are written as empty text, and a fake Groq config now walks the full checkpoint path in tests.
 
 ## Design decisions
 
@@ -231,11 +271,11 @@ Gemini and OpenAI use the same eval command with `--provider gemini` or `--provi
 
 ## Roadmap
 
+- A verifier that re-runs the program, or checks the indexing convention the question stated. `code-fibonacci` shows why: the self-check accepted 89, the 11th term, as the 10th.
 - Token and cost columns on the trace.
 - Concurrent execution when one step requests tools that do not depend on each other.
 - A real sandbox (bubblewrap or a container) before this ever runs untrusted model output for someone else.
 - A local retrieval tool beside web search.
-- A checked-in Groq eval once a key is available to CI as a secret.
 - OpenTelemetry spans for the same trace the CLI already prints.
 
 ## Development
