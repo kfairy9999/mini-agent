@@ -109,10 +109,10 @@ class EvalReport:
 
 
 def render_markdown(report: EvalReport) -> str:
-    lines = [
+    lines: list[str] = [
         "# Evaluation report",
         "",
-        report.disclaimer,
+        _line(report.disclaimer),
     ]
     if report.partial:
         lines.extend(
@@ -127,10 +127,10 @@ def render_markdown(report: EvalReport) -> str:
             "| Metric | Value |",
             "| --- | --- |",
         f"| Mode | {'mock' if report.provider == 'mock' else 'hosted'} |",
-        f"| Provider | {report.provider} |",
-        f"| Model | {report.model} |",
-        f"| Search | {report.search} |",
-        f"| Generated | {report.generated_at} |",
+        f"| Provider | {_line(report.provider)} |",
+        f"| Model | {_line(report.model)} |",
+        f"| Search | {_line(report.search)} |",
+        f"| Generated | {_line(report.generated_at)} |",
         f"| Tasks | {report.total} |",
         f"| Passed | {report.passed} |",
         f"| Rate limited | {report.rate_limited} |",
@@ -174,7 +174,7 @@ def render_markdown(report: EvalReport) -> str:
             + " |"
         )
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join(_line(line) for line in lines)
 
 
 def write_report(report: EvalReport, output_dir: Path) -> tuple[Path, Path]:
@@ -196,11 +196,11 @@ def disclaimer_for(provider: str, search: str) -> str:
             "Mock mode uses the deterministic policy and the offline search fixture. "
             "These numbers are not measurements of Groq, Gemini, or OpenAI."
         )
-        return (
-            f"Hosted run with provider {provider} and search mode {search}. "
-            "Results depend on the model and, when search is live, on the public web. "
-            "Success rate ignores tasks that stayed rate-limited after retries; those are not model failures."
-        )
+    return (
+        f"Hosted run with provider {provider} and search mode {search}. "
+        "Results depend on the model and, when search is live, on the public web. "
+        "Success rate ignores tasks that stayed rate-limited after retries; those are not model failures."
+    )
 
 
 def _categories(rows: list[TaskResult]) -> dict[str, dict[str, int]]:
@@ -219,8 +219,14 @@ def _percent(rate: float) -> str:
     return f"{percent:.1f}%"
 
 
-def _cell(text: str, limit: int = 72) -> str:
-    cleaned = " ".join(text.split())
+def _line(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _cell(text: object, limit: int = 72) -> str:
+    cleaned = " ".join(_line(text).split())
     if len(cleaned) > limit:
         cleaned = cleaned[: limit - 1] + "…"
     return cleaned.replace("|", "\\|")

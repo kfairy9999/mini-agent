@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from mini_agent.eval.harness import run_evaluation
-from mini_agent.eval.report import render_markdown
+from mini_agent.eval.report import EvalReport, TaskResult, disclaimer_for, render_markdown, write_report
 from mini_agent.eval.scoring import extract_numbers
 from mini_agent.eval.tasks import default_tasks
+from mini_agent.factory import build_agent
 from mini_agent.llm import RateLimitError
 from mini_agent.types import AgentResult, Step
 
@@ -127,3 +128,87 @@ def test_eval_prints_progress_and_keeps_partial_results(tmp_path: Path) -> None:
     assert saved["partial"] is True
     assert [row["id"] for row in saved["tasks"]] == ["math-multiply-add"]
     assert "Partial" in (tmp_path / "eval_results.md").read_text(encoding="utf-8")
+
+
+def test_partial_report_renders_with_groq_metadata(tmp_path: Path) -> None:
+    task = default_tasks()[0]
+    disclaimer = disclaimer_for("groq", "fixture")
+    assert isinstance(disclaimer, str)
+    assert "groq" in disclaimer
+    report = EvalReport(
+        provider="groq",
+        model="qwen/qwen3.8-27b",
+        search="fixture",
+        disclaimer=disclaimer,
+        generated_at="2026-11-08T03:50:00Z",
+        rows=[
+            TaskResult(
+                id=task.id,
+                category=task.category,
+                question=task.question,
+                expectation=task.expectation,
+                passed=True,
+                verified=True,
+                steps=3,
+                latency_ms=720.0,
+                stop_reason="reflected",
+                answer="(17 × 23) + 5 = 396.",
+            )
+        ],
+        partial=True,
+    )
+    text = render_markdown(report)
+    assert "qwen/qwen3.8-27b" in text
+    assert "2026-11-08T03:50:00Z" in text
+    assert "Partial" in text
+    assert "math-multiply-add" in text
+    assert "396" in text
+    write_report(report, tmp_path)
+    saved = json.loads((tmp_path / "eval_results.json").read_text(encoding="utf-8"))
+    assert saved["partial"] is True
+    assert saved["provider"] == "groq"
+    assert saved["model"] == "qwen/qwen3.8-27b"
+    assert saved["mode"] == "hosted"
+    assert saved["search"] == "fixture"
+    # A missing field must not crash the checkpoint join.
+    broken = EvalReport(
+        provider="groq",
+        model=None,  # type: ignore[arg-type]
+        search="fixture",
+        disclaimer=None,  # type: ignore[arg-type]
+        generated_at=None,  # type: ignore[arg-type]
+        rows=report.rows,
+        partial=True,
+    )
+    rendered = render_markdown(broken)
+    assert "Partial" in rendered
+    assert "math-multiply-add" in rendered
+
+
+def test_eval_checkpoints_end_to_end_with_fake_groq(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    lines: list[str] = []
+    report = run_evaluation(
+        provider="groq",
+        search="fixture",
+        agent=build_agent(provider="mock", search="fixture"),
+        output_dir=tmp_path,
+        on_progress=lines.append,
+    )
+    assert report.provider == "groq"
+    assert report.model == "qwen/qwen3.8-27b"
+    assert report.search == "fixture"
+    assert report.partial is False
+    assert report.disclaimer.startswith("Hosted run with provider groq")
+    assert report.passed == report.total == 15
+    assert report.success_rate == 1
+    markdown = (tmp_path / "eval_results.md").read_text(encoding="utf-8")
+    assert markdown == render_markdown(report)
+    assert "qwen/qwen3.8-27b" in markdown
+    assert "Partial:" not in markdown
+    saved = json.loads((tmp_path / "eval_results.json").read_text(encoding="utf-8"))
+    assert saved["mode"] == "hosted"
+    assert saved["partial"] is False
+    assert len(saved["tasks"]) == 15
+    assert lines[0] == "[1/15] math-multiply-add starting"
+    assert lines[-1].startswith("[15/15] fact-water-boiling pass")
