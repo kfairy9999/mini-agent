@@ -20,6 +20,7 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_MIN_INTERVAL = 0.0
 DEFAULT_MAX_RETRIES = 8
+DEFAULT_MAX_WAIT = 60.0
 
 
 class ConfigError(RuntimeError):
@@ -50,6 +51,7 @@ class LLMConfig:
     max_tokens: int
     min_interval: float = DEFAULT_MIN_INTERVAL
     max_retries: int = DEFAULT_MAX_RETRIES
+    max_wait: float = DEFAULT_MAX_WAIT
 
 
 def load_dotenv_file(
@@ -101,6 +103,7 @@ def load_config(provider: str | None = None) -> LLMConfig:
             max_tokens=_max_tokens(),
             min_interval=_min_interval(),
             max_retries=_max_retries(),
+            max_wait=_max_wait(),
         )
     if requested not in {"groq", "gemini", "openai", "custom"}:
         known = ", ".join(["auto", "mock", *PRESETS, "custom"])
@@ -122,6 +125,7 @@ def load_config(provider: str | None = None) -> LLMConfig:
             _max_tokens(),
             _min_interval(),
             _max_retries(),
+            _max_wait(),
         )
 
     preset = PRESETS[requested]
@@ -143,6 +147,7 @@ def load_config(provider: str | None = None) -> LLMConfig:
         _max_tokens(),
         _min_interval(),
         _max_retries(),
+        _max_wait(),
     )
 
 
@@ -220,6 +225,19 @@ def _max_retries() -> int:
         raise ConfigError("LLM_MAX_RETRIES must be an integer.") from exc
     if value < 0:
         raise ConfigError("LLM_MAX_RETRIES must be zero or positive.")
+    return value
+
+
+def _max_wait() -> float:
+    raw = os.getenv("LLM_MAX_WAIT", "").strip()
+    if not raw:
+        return DEFAULT_MAX_WAIT
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError("LLM_MAX_WAIT must be a number of seconds.") from exc
+    if value <= 0:
+        raise ConfigError("LLM_MAX_WAIT must be positive.")
     return value
 
 

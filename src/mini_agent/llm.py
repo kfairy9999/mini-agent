@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -49,11 +50,22 @@ class LLMError(RuntimeError):
 
 
 class RateLimitError(LLMError):
-    """The provider asked us to wait. ``retry_after`` is seconds, when known."""
+    """The provider asked us to wait. ``retry_after`` is seconds, when known.
 
-    def __init__(self, message: str, *, retry_after: float | None) -> None:
+    ``ignored_wait`` is a longer reset from a different bucket (for example
+    the request window) that was not used to choose ``retry_after``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float | None,
+        ignored_wait: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.ignored_wait = ignored_wait
 
 
 class ToolValidationError(LLMError):
@@ -83,10 +95,11 @@ class OpenAICompatibleClient:
     this shape. The transport, clock, and sleep function are injectable so
     tests never open a socket or wait on a rate limit.
 
-    A 429 is retried. The wait is the provider's Retry-After or rate-limit
-    reset hint when one is present, and that wait becomes the minimum gap
-    before later calls on this client. The eval reuses one client, so a
-    free-tier run slows down instead of failing the rest of the tasks.
+    A 429 is retried. The wait is Retry-After or the "try again in" line when
+    the body has one. A token-limit 429 does not use the request-bucket
+    reset, which on Groq can be tens of minutes while the token reset is
+    milliseconds. Any single sleep is capped by ``LLM_MAX_WAIT`` (default
+    60 seconds). The chosen wait becomes the gap before later calls.
 
     Some Groq models emit a tool named ``json`` that was not in the request.
     Groq then rejects the whole call with HTTP 400. That turn is retried
@@ -130,11 +143,12 @@ class OpenAICompatibleClient:
                 continue
             except RateLimitError as exc:
                 self._mark_request()
-                delay = retry_delay(exc.retry_after, rate_attempts)
+                delay = retry_delay(exc.retry_after, rate_attempts, max_wait=self._config.max_wait)
                 self._min_interval = max(self._min_interval, delay)
                 if rate_attempts >= self._max_retries:
                     raise
                 rate_attempts += 1
+                _log_wait(delay, exc.ignored_wait)
                 self._sleep(delay)
                 # The retry wait already satisfied the pace for the next try.
                 self._last_request_at = self._clock() - self._min_interval
@@ -234,31 +248,129 @@ def error_message(detail: str | dict[str, Any]) -> str:
     return detail.strip()[:500]
 
 
+class RetryPlan:
+    """The wait to use, and a longer unrelated reset that was ignored."""
+
+    def __init__(self, *, wait: float | None, ignored: float | None) -> None:
+        self.wait = wait
+        self.ignored = ignored
+
+
 def retry_after_seconds(headers: Any, body: str) -> float | None:
-    """Longest wait hinted by headers or by 'try again in …' in the body."""
+    """Seconds to wait for this 429, or None when the body gives no hint.
 
-    candidates: list[float] = []
-    for name in ("Retry-After", "x-ratelimit-reset-tokens", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
-        raw = _header_value(headers, name)
-        if raw:
-            parsed = _parse_delay_token(raw)
-            if parsed is not None:
-                candidates.append(parsed)
-    for match in _TRY_AGAIN.finditer(body or ""):
-        candidates.append(float(match.group(1)) * _UNIT_SECONDS[match.group(2).lower()])
-    if not candidates:
-        return None
-    return max(0.0, max(candidates))
+    Explicit Retry-After and "try again in" win. Otherwise a token-limit
+    response uses ``x-ratelimit-reset-tokens`` and a request-limit response
+    uses ``x-ratelimit-reset-requests``. The other bucket is not consulted:
+    Groq's request reset can be tens of minutes on the same response whose
+    token reset is under a second.
+    """
+
+    return retry_plan(headers, body).wait
 
 
-def retry_delay(retry_after: float | None, attempt: int) -> float:
-    """Seconds to sleep before the next try. Always at least a short backoff."""
+def retry_plan(headers: Any, body: str) -> "RetryPlan":
+    explicit: list[float] = []
+    retry_after = _header_delay(headers, "Retry-After")
+    if retry_after is not None:
+        explicit.append(retry_after)
+    try_again = _try_again_seconds(body)
+    if try_again is not None:
+        explicit.append(try_again)
+    resets = {
+        "tokens": _header_delay(headers, "x-ratelimit-reset-tokens"),
+        "requests": _header_delay(headers, "x-ratelimit-reset-requests"),
+        "generic": _header_delay(headers, "x-ratelimit-reset"),
+    }
+    kind = limit_kind(body)
+    if explicit:
+        chosen = max(explicit)
+        return RetryPlan(wait=chosen, ignored=_ignored_reset(resets, kind, chosen))
+    if kind == "tokens" and resets["tokens"] is not None:
+        return RetryPlan(wait=resets["tokens"], ignored=_longer(resets["requests"], resets["tokens"]))
+    if kind == "requests" and resets["requests"] is not None:
+        return RetryPlan(wait=resets["requests"], ignored=_longer(resets["tokens"], resets["requests"]))
+    available = [value for value in resets.values() if value is not None]
+    if not available:
+        return RetryPlan(wait=None, ignored=None)
+    chosen = min(available)
+    longer = [value for value in available if value > chosen + 1]
+    return RetryPlan(wait=chosen, ignored=max(longer) if longer else None)
+
+
+def retry_delay(retry_after: float | None, attempt: int, max_wait: float = MAX_RETRY_SLEEP_SECONDS) -> float:
+    """Seconds to sleep before the next try. Never longer than ``max_wait``."""
 
     if retry_after is None:
         base = min(2**attempt, 30.0)
     else:
         base = retry_after + RETRY_CUSHION_SECONDS
-    return min(MAX_RETRY_SLEEP_SECONDS, max(0.0, base))
+    cap = max_wait if max_wait > 0 else MAX_RETRY_SLEEP_SECONDS
+    return min(cap, max(0.0, base))
+
+
+def limit_kind(body: str) -> str:
+    """Which bucket a 429 is about: ``tokens``, ``requests``, or ``unknown``."""
+
+    text = f"{body or ''}\n{error_message(body or '')}".lower()
+    tokens = any(
+        marker in text
+        for marker in ("tokens per minute", "tokens per day", "itpm", "on tokens", "(tpm)", " tpm")
+    )
+    requests = any(
+        marker in text
+        for marker in ("requests per minute", "requests per day", "on requests", "(rpm)", " rpm")
+    )
+    if tokens and not requests:
+        return "tokens"
+    if requests and not tokens:
+        return "requests"
+    if tokens:
+        return "tokens"
+    return "unknown"
+
+
+def _header_delay(headers: Any, name: str) -> float | None:
+    raw = _header_value(headers, name)
+    if not raw:
+        return None
+    return _parse_delay_token(raw)
+
+
+def _try_again_seconds(body: str) -> float | None:
+    found = [
+        float(match.group(1)) * _UNIT_SECONDS[match.group(2).lower()]
+        for match in _TRY_AGAIN.finditer(body or "")
+    ]
+    if not found:
+        return None
+    return max(found)
+
+
+def _longer(other: float | None, chosen: float) -> float | None:
+    if other is None or other <= chosen + 1:
+        return None
+    return other
+
+
+def _ignored_reset(resets: dict[str, float | None], kind: str, chosen: float) -> float | None:
+    if kind == "tokens":
+        return _longer(resets["requests"], chosen)
+    if kind == "requests":
+        return _longer(resets["tokens"], chosen)
+    longer = [value for value in resets.values() if value is not None and value > chosen + 1]
+    if not longer:
+        return None
+    return max(longer)
+
+
+def _log_wait(delay: float, ignored: float | None) -> None:
+    if delay < 0.5:
+        return
+    message = f"rate limit: waiting {delay:.1f}s"
+    if ignored is not None and ignored > delay + 1:
+        message += f"; ignored a {ignored:.0f}s reset from another bucket"
+    print(message, file=sys.stderr, flush=True)
 
 
 def is_tool_validation_error(detail: str) -> bool:
@@ -276,9 +388,11 @@ def tool_name_from_validation_error(detail: str) -> str | None:
 def _http_error(code: int, detail: str, headers: Any, reason: str) -> LLMError:
     message = error_message(detail) or reason
     if code == 429:
+        plan = retry_plan(headers, detail)
         return RateLimitError(
             f"LLM request failed (429): {message}",
-            retry_after=retry_after_seconds(headers, detail),
+            retry_after=plan.wait,
+            ignored_wait=plan.ignored,
         )
     if code == 400 and is_tool_validation_error(detail):
         return ToolValidationError(

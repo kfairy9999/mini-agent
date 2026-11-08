@@ -16,6 +16,7 @@ from mini_agent.llm import (
     ToolValidationError,
     parse_chat_response,
     retry_after_seconds,
+    retry_delay,
     urllib_transport,
 )
 
@@ -136,8 +137,126 @@ def test_retry_after_parses_groq_hints() -> None:
         "Earlier note: Please try again in 67.499999ms."
     )
     assert retry_after_seconds(None, body) == pytest.approx(5.048571428)
-    assert retry_after_seconds({"Retry-After": "1", "x-ratelimit-reset-tokens": "6m0s"}, body) == pytest.approx(360)
+    # An explicit "try again" wins over a long reset header.
+    assert retry_after_seconds({"Retry-After": "1", "x-ratelimit-reset-tokens": "6m0s"}, body) == pytest.approx(
+        5.048571428
+    )
     assert retry_after_seconds({"x-ratelimit-reset-requests": "2s"}, "") == pytest.approx(2)
+
+
+# Headers observed on the free tier. The request bucket resets in tens of
+# minutes; the token bucket resets in milliseconds. A token 429 must not sleep
+# for the request reset.
+_FREE_TIER_HEADERS = {
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-limit-tokens": "8000",
+    "x-ratelimit-reset-requests": "38m52.8s",
+    "x-ratelimit-reset-tokens": "134ms",
+}
+_REQUEST_RESET_SECONDS = 38 * 60 + 52.8
+
+
+def test_token_limit_ignores_the_long_request_reset() -> None:
+    body = (
+        "Rate limit reached for model `qwen/qwen3.8-27b` on input tokens per minute (ITPM): "
+        "Limit 8000, Used 6836, Requested 753. Please try again in 5.048571428s."
+    )
+    assert retry_after_seconds(_FREE_TIER_HEADERS, body) == pytest.approx(5.048571428)
+    tokens_only = (
+        "Rate limit reached for model `qwen/qwen3.8-27b` on tokens per minute (TPM): Limit 8000, Used 7900."
+    )
+    assert retry_after_seconds(_FREE_TIER_HEADERS, tokens_only) == pytest.approx(0.134)
+    requests_only = "Rate limit reached on requests per minute."
+    assert retry_after_seconds(_FREE_TIER_HEADERS, requests_only) == pytest.approx(_REQUEST_RESET_SECONDS)
+    assert retry_delay(_REQUEST_RESET_SECONDS, 0, max_wait=60) == 60
+
+
+def test_client_caps_a_single_wait_and_does_not_use_the_request_reset_for_tokens(capsys: pytest.CaptureFixture[str]) -> None:
+    clock = _Clock()
+    body = (
+        "Rate limit reached on input tokens per minute (ITPM): Limit 8000. Please try again in 5.048571428s."
+    )
+    chosen = retry_after_seconds(_FREE_TIER_HEADERS, body)
+
+    def transport(url: str, headers: dict[str, str], payload: dict[str, object], timeout: float) -> dict[str, object]:
+        raise RateLimitError(
+            "LLM request failed (429): token limit",
+            retry_after=chosen,
+            ignored_wait=_REQUEST_RESET_SECONDS,
+        )
+
+    config = _config()
+    client = OpenAICompatibleClient(
+        LLMConfig(
+            provider=config.provider,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_tokens=config.max_tokens,
+            max_retries=0,
+            max_wait=60,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        clock=clock.clock,
+    )
+    with pytest.raises(RateLimitError):
+        client.complete([{"role": "user", "content": "hi"}], [])
+    assert clock.sleeps == []
+    assert chosen == pytest.approx(5.048571428)
+
+    def succeed_after_wait(url: str, headers: dict[str, str], payload: dict[str, object], timeout: float) -> dict[str, object]:
+        if not clock.sleeps:
+            raise RateLimitError(
+                f"LLM request failed (429): {body}",
+                retry_after=chosen,
+                ignored_wait=_REQUEST_RESET_SECONDS,
+            )
+        return {"choices": [{"message": {"content": "396"}}]}
+
+    client = OpenAICompatibleClient(
+        LLMConfig(
+            provider=config.provider,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_tokens=config.max_tokens,
+            max_wait=60,
+        ),
+        transport=succeed_after_wait,
+        sleep=clock.sleep,
+        clock=clock.clock,
+    )
+    assert client.complete([{"role": "user", "content": "hi"}], []).content == "396"
+    assert clock.sleeps[0] == pytest.approx(5.048571428 + 0.25)
+    assert clock.sleeps[0] < 60
+    assert "ignored a 2333s reset" in capsys.readouterr().err
+
+    clock.sleeps.clear()
+
+    def long_request_bucket(url: str, headers: dict[str, str], payload: dict[str, object], timeout: float) -> dict[str, object]:
+        if not clock.sleeps:
+            raise RateLimitError("LLM request failed (429): requests per minute", retry_after=_REQUEST_RESET_SECONDS)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    client = OpenAICompatibleClient(
+        LLMConfig(
+            provider=config.provider,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_tokens=config.max_tokens,
+            max_wait=60,
+        ),
+        transport=long_request_bucket,
+        sleep=clock.sleep,
+        clock=clock.clock,
+    )
+    assert client.complete([{"role": "user", "content": "hi"}], []).content == "ok"
+    assert clock.sleeps[0] == 60
 
 
 def test_client_retries_429_then_paces_the_next_call() -> None:
@@ -277,7 +396,7 @@ def test_urllib_transport_maps_429_and_json_tool_400(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(RateLimitError, match="5.048571428s") as limited_error:
         urllib_transport("https://example.invalid", {}, {"model": "x"}, 1)
-    assert limited_error.value.retry_after == pytest.approx(360)
+    assert limited_error.value.retry_after == pytest.approx(5.048571428)
 
     with pytest.raises(ToolValidationError, match="json") as rejected_error:
         urllib_transport("https://example.invalid", {}, {"model": "x"}, 1)

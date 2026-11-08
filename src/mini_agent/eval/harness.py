@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +40,7 @@ def run_evaluation(
     tasks: tuple[Task, ...] | None = None,
     output_dir: Path | None = None,
     agent: TaskRunner | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> EvalReport:
     """Evaluate ``tasks`` (the built-in set by default).
 
@@ -46,6 +48,10 @@ def run_evaluation(
     not turn this into a hosted run; pass ``provider="groq"`` (or another
     preset) for that. A task passes only when the loop completes its
     self-check and the answer satisfies the checker.
+
+    Tasks run one at a time. After each task the report is written, so an
+    interrupt keeps the tasks that already finished. ``on_progress`` receives
+    one line when a task starts and one when it finishes.
     """
 
     selected = tasks if tasks is not None else default_tasks()
@@ -55,19 +61,42 @@ def run_evaluation(
     if agent is None:
         agent = build_agent(provider=provider, max_steps=max_steps, search=search_mode, config=config)
     rows: list[TaskResult] = []
-    for task in selected:
-        rows.append(_run_task(agent, task))
-    report = EvalReport(
-        provider=config.provider,
-        model=config.model,
-        search=search_mode,
-        disclaimer=disclaimer_for(config.provider, search_mode),
-        generated_at=utc_now(),
-        rows=rows,
-    )
-    if output_dir is not None:
-        write_report(report, output_dir)
-    return report
+    total = len(selected)
+
+    def checkpoint(partial: bool) -> EvalReport:
+        report = EvalReport(
+            provider=config.provider,
+            model=config.model,
+            search=search_mode,
+            disclaimer=disclaimer_for(config.provider, search_mode),
+            generated_at=utc_now(),
+            rows=list(rows),
+            partial=partial,
+        )
+        if output_dir is not None:
+            write_report(report, output_dir)
+        return report
+
+    try:
+        for index, task in enumerate(selected, start=1):
+            _emit(on_progress, f"[{index}/{total}] {task.id} starting")
+            row = _run_task(agent, task)
+            rows.append(row)
+            status = "pass" if row.passed else row.stop_reason
+            _emit(
+                on_progress,
+                f"[{index}/{total}] {task.id} {status} steps={row.steps} {row.latency_ms / 1000:.1f}s",
+            )
+            checkpoint(partial=True)
+    except KeyboardInterrupt:
+        checkpoint(partial=True)
+        raise
+    return checkpoint(partial=False)
+
+
+def _emit(on_progress: Callable[[str], None] | None, message: str) -> None:
+    if on_progress is not None:
+        on_progress(message)
 
 
 def _run_task(agent: TaskRunner, task: Task) -> TaskResult:

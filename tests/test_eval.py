@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mini_agent.eval.harness import run_evaluation
 from mini_agent.eval.report import render_markdown
 from mini_agent.eval.scoring import extract_numbers
@@ -101,3 +103,27 @@ def test_exhausted_rate_limit_is_not_a_model_failure() -> None:
     assert report.success_rate == 1
     markdown = render_markdown(report)
     assert "rate limit" in markdown
+
+
+def test_eval_prints_progress_and_keeps_partial_results(tmp_path: Path) -> None:
+    lines: list[str] = []
+
+    class StopAfterFirst:
+        def run(self, question: str) -> AgentResult:
+            if "2 ** 10" in question:
+                raise KeyboardInterrupt
+            return _checked("396")
+
+    with pytest.raises(KeyboardInterrupt):
+        run_evaluation(
+            agent=StopAfterFirst(),
+            tasks=default_tasks()[:2],
+            output_dir=tmp_path,
+            on_progress=lines.append,
+        )
+    assert lines[0].startswith("[1/2] math-multiply-add starting")
+    assert "pass" in lines[1]
+    saved = json.loads((tmp_path / "eval_results.json").read_text(encoding="utf-8"))
+    assert saved["partial"] is True
+    assert [row["id"] for row in saved["tasks"]] == ["math-multiply-add"]
+    assert "Partial" in (tmp_path / "eval_results.md").read_text(encoding="utf-8")

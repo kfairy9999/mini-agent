@@ -30,6 +30,7 @@ class EvalReport:
     disclaimer: str
     generated_at: str
     rows: list[TaskResult]
+    partial: bool = False
 
     @property
     def total(self) -> int:
@@ -80,6 +81,7 @@ class EvalReport:
             "mode": "mock" if self.provider == "mock" else "hosted",
             "disclaimer": self.disclaimer,
             "generated_at": self.generated_at,
+            "partial": self.partial,
             "success_rate": self.success_rate,
             "passed": self.passed,
             "total": self.total,
@@ -111,9 +113,19 @@ def render_markdown(report: EvalReport) -> str:
         "# Evaluation report",
         "",
         report.disclaimer,
-        "",
-        "| Metric | Value |",
-        "| --- | --- |",
+    ]
+    if report.partial:
+        lines.extend(
+            [
+                "",
+                "Partial: this run was interrupted. Tasks below are the ones that finished.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "| Metric | Value |",
+            "| --- | --- |",
         f"| Mode | {'mock' if report.provider == 'mock' else 'hosted'} |",
         f"| Provider | {report.provider} |",
         f"| Model | {report.model} |",
@@ -129,7 +141,8 @@ def render_markdown(report: EvalReport) -> str:
         "",
         "| Category | Passed | Total |",
         "| --- | --- | --- |",
-    ]
+        ]
+    )
     for name, bucket in _categories(report.rows).items():
         lines.append(f"| {name} | {bucket['passed']} | {bucket['total']} |")
     lines.extend(

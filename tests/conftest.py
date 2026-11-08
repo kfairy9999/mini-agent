@@ -13,6 +13,7 @@ _LLM_ENV = (
     "LLM_MAX_TOKENS",
     "LLM_MIN_INTERVAL",
     "LLM_MAX_RETRIES",
+    "LLM_MAX_WAIT",
     "GROQ_API_KEY",
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",

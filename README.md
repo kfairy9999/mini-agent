@@ -221,7 +221,7 @@ Gemini and OpenAI use the same eval command with `--provider gemini` or `--provi
 
 **The HTTP client is urllib, with a real User-Agent.** Cloudflare rejects `Python-urllib` with error 1010. The client sends `mini-agent/<version>`. Presets differ by base URL, model id, and which environment variable holds the key. Runtime dependencies stay `ddgs` and `rich`.
 
-**Rate limits are waits, not wrong answers.** The client honors `Retry-After`, Groq's reset headers, and the delay written in a 429 body, then keeps that gap for later calls. The eval is serial. A task that still comes back rate-limited is retried, and if it never gets a completion it is reported separately from a failed answer.
+**Rate limits are waits, not wrong answers.** A 429 uses `Retry-After` or the "try again in" line when the body has one. A token-limit response uses `x-ratelimit-reset-tokens` and does not use `x-ratelimit-reset-requests`, which on this free tier can read tens of minutes while the token bucket only needs milliseconds. Any one sleep is capped by `LLM_MAX_WAIT` (default 60 seconds). The eval is serial, prints a line as each task starts and finishes, and rewrites the report after every task so an interrupt keeps the tasks that finished. A task that still comes back rate-limited is retried, and if it never gets a completion it is reported separately from a failed answer.
 
 **An unknown tool name from the provider is one retry, not a crash.** gpt-oss on Groq can call `json`, which is not registered. Groq returns HTTP 400 before this process ever sees a tool call, so the client cannot feed that call back as an observation. It sends the same turn once more with a user message that lists the real tools. The caller's transcript is unchanged unless that retry succeeds.
 
