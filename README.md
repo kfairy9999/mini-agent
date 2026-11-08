@@ -85,11 +85,17 @@ The client is one HTTP POST to `{base}/chat/completions` with the OpenAI tool sc
 
 | Provider | `LLM_BASE_URL` | Default `LLM_MODEL` | Key variable |
 | --- | --- | --- | --- |
-| groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| groq | `https://api.groq.com/openai/v1` | `qwen/qwen3.8-27b` | `GROQ_API_KEY` |
 | gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3.8-flash` | `GEMINI_API_KEY` |
 | openai | `https://api.openai.com/v1` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
 
-`llama-3.3-70b-versatile` is a current Groq production model with tool use. `llama-3.1-8b-instant` is the faster Groq option if you set `LLM_MODEL`. Gemini's model id is the one in Google's OpenAI-compatibility docs. `gpt-4.1-mini` still serves chat completions; OpenAI's deprecation notice lists `gpt-6-luna` as its replacement and a removal date of 2027-01-14. Set `LLM_MODEL` to the id your account actually has.
+`qwen/qwen3.8-27b` is the Groq default: it is on the current model list and it tool-calls. `llama-3.3-70b-versatile` now returns 404. `openai/gpt-oss-120b` and `openai/gpt-oss-20b` are also on that list. gpt-oss sometimes emits a tool named `json`, which Groq rejects with HTTP 400 because that name was not in the request. The client retries that turn once and tells the model which tools actually exist. If the same 400 comes back, the call fails with that error instead of crashing the loop.
+
+Cloudflare answers `api.groq.com` with error 1010 when the client sends urllib's default `Python-urllib` User-Agent. The client sends `mini-agent/<version>` instead.
+
+A free-tier key 429s after a couple of tasks if calls go out back to back. A 429 is retried using `Retry-After`, `x-ratelimit-reset-*`, or the "try again in …" text in the body, plus a short cushion. That wait becomes the gap before later calls on the same client. The eval runs one task at a time on one client, and a task that still exhausts the budget is tried again. If it is still rate-limited, the report marks it `rate limit` and leaves it out of the success rate. It is not scored as a wrong answer. `LLM_MIN_INTERVAL` (seconds, default 0) sets a gap before the first 429, and `LLM_MAX_RETRIES` (default 8) is the per-call retry budget.
+
+Gemini's model id is the one in Google's OpenAI-compatibility docs. `gpt-4.1-mini` still serves chat completions; OpenAI's deprecation notice lists `gpt-6-luna` as its replacement and a removal date of 2027-01-14. Set `LLM_MODEL` to the id your account actually has.
 
 `LLM_API_KEY` wins over the provider-specific variable. Copy `.env.example` to `.env` in the working directory if you want the CLI to load it. Values already in the environment win. pytest does not read `.env`.
 
@@ -101,7 +107,7 @@ Resolution order for `mini-agent`:
 4. `GROQ_API_KEY`, then `GEMINI_API_KEY`, then `OPENAI_API_KEY`.
 5. Otherwise the mock.
 
-`custom` needs `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. `LLM_TIMEOUT` (seconds, default 60) and `LLM_MAX_TOKENS` (default 1024) are optional.
+`custom` needs `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. `LLM_TIMEOUT` (seconds, default 60), `LLM_MAX_TOKENS` (default 1024), `LLM_MIN_INTERVAL` (default 0), and `LLM_MAX_RETRIES` (default 8) are optional.
 
 ## Tools
 
@@ -145,7 +151,7 @@ That writes `reports/eval_results.md` and `reports/eval_results.json` and prints
 
 ### Mock-mode results
 
-These numbers are from one local run of `mini-agent-eval` on 2026-11-08T03:21:47Z. Re-running moves the latency. It does not change the pass/fail result or the step count, which the tests lock in. This is the mock policy plus the offline fixture corpus. It is not a Groq, Gemini, or OpenAI score.
+These numbers are from one local run of `mini-agent-eval` on 2026-11-08T03:21:47Z. Re-running moves the latency. It does not change the pass/fail result or the step count, which the tests lock in. This is the mock policy plus the offline fixture corpus. It is not a Groq, Gemini, or OpenAI score. A current report also lists rate-limited tasks. This run had none, so the success rate is 15/15. Rate-limited rows are left out of that rate.
 
 The mock does not look up these labels. Arithmetic answers are whatever the calculator returns. Code answers are the last line of sandbox stdout. Factual answers are the matching fixture snippet, copied through the observation. The five snippets live in `src/mini_agent/tools/web_search.py`. An unknown fact stays unanswered. "What is the capital of Atlantis?" does not come back as Paris.
 
@@ -191,19 +197,12 @@ Not measured. Do not paste the mock table here.
 
 ```bash
 export GROQ_API_KEY="gsk_..."
-# optional; these are already the defaults
-export LLM_BASE_URL="https://api.groq.com/openai/v1"
-export LLM_MODEL="llama-3.3-70b-versatile"
 
 mini-agent "What is (17 * 23) + 5?"
-mini-agent "Use Python to compute the 10th Fibonacci number. The sequence starts 1, 1, 2, 3, 5."
-mini-agent "What is the capital of France?"
 
-# fixture search: the model, without live web flakiness
-mini-agent-eval --provider groq --search fixture --output-dir reports/groq-fixture
-
-# live ddgs
-mini-agent-eval --provider groq --search live --output-dir reports/groq
+# Fixture search keeps factual tasks on the offline corpus.
+# The default model is qwen/qwen3.8-27b. Do not set llama-3.3-70b-versatile.
+mini-agent-eval --provider groq --search fixture --output-dir reports/groq
 ```
 
 `LLM_API_KEY` may be set instead of `GROQ_API_KEY`. After a real run, paste the summary from `reports/groq/eval_results.md` under this heading. Live snippets will not always contain the phrase the checker looks for, so a hosted score below 100% is a real result, not a failed install.
@@ -220,7 +219,11 @@ Gemini and OpenAI use the same eval command with `--provider gemini` or `--provi
 
 **Arithmetic does not go through the sandbox.** The calculator walks an AST and rejects anything that is not an operator or a number, including huge exponents. Algorithms go to Python, where the result is computed rather than recalled.
 
-**The HTTP client is urllib.** The tool-calling protocol is the whole client, and the runtime dependencies are `ddgs` and `rich`. Presets differ by base URL, model id, and which environment variable holds the key.
+**The HTTP client is urllib, with a real User-Agent.** Cloudflare rejects `Python-urllib` with error 1010. The client sends `mini-agent/<version>`. Presets differ by base URL, model id, and which environment variable holds the key. Runtime dependencies stay `ddgs` and `rich`.
+
+**Rate limits are waits, not wrong answers.** The client honors `Retry-After`, Groq's reset headers, and the delay written in a 429 body, then keeps that gap for later calls. The eval is serial. A task that still comes back rate-limited is retried, and if it never gets a completion it is reported separately from a failed answer.
+
+**An unknown tool name from the provider is one retry, not a crash.** gpt-oss on Groq can call `json`, which is not registered. Groq returns HTTP 400 before this process ever sees a tool call, so the client cannot feed that call back as an observation. It sends the same turn once more with a user message that lists the real tools. The caller's transcript is unchanged unless that retry succeeds.
 
 **The mock is a policy.** It chooses calculator, Python, or search from the wording of the question, then drafts from the observation. Generalization tests ask for a factorial, a root, and a string that are not in the 15-task set. Unknown search queries produce "I could not find a sourced answer," not a guess.
 

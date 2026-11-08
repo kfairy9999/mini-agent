@@ -40,22 +40,37 @@ class EvalReport:
         return sum(1 for row in self.rows if row.passed)
 
     @property
+    def rate_limited(self) -> int:
+        return sum(1 for row in self.rows if row.stop_reason == "rate_limited")
+
+    @property
+    def scored(self) -> int:
+        """Tasks that finished or failed for a reason other than the rate limit."""
+
+        return self.total - self.rate_limited
+
+    @property
     def success_rate(self) -> float:
-        if not self.rows:
+        if self.scored == 0:
             return 0.0
-        return self.passed / self.total
+        return self.passed / self.scored
 
     @property
     def average_steps(self) -> float:
-        if not self.rows:
+        scored = self._scored_rows()
+        if not scored:
             return 0.0
-        return sum(row.steps for row in self.rows) / self.total
+        return sum(row.steps for row in scored) / len(scored)
 
     @property
     def average_latency_ms(self) -> float:
-        if not self.rows:
+        scored = self._scored_rows()
+        if not scored:
             return 0.0
-        return sum(row.latency_ms for row in self.rows) / self.total
+        return sum(row.latency_ms for row in scored) / len(scored)
+
+    def _scored_rows(self) -> list[TaskResult]:
+        return [row for row in self.rows if row.stop_reason != "rate_limited"]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -68,6 +83,8 @@ class EvalReport:
             "success_rate": self.success_rate,
             "passed": self.passed,
             "total": self.total,
+            "scored": self.scored,
+            "rate_limited": self.rate_limited,
             "average_steps": self.average_steps,
             "average_latency_ms": round(self.average_latency_ms, 2),
             "categories": _categories(self.rows),
@@ -104,6 +121,8 @@ def render_markdown(report: EvalReport) -> str:
         f"| Generated | {report.generated_at} |",
         f"| Tasks | {report.total} |",
         f"| Passed | {report.passed} |",
+        f"| Rate limited | {report.rate_limited} |",
+        f"| Scored | {report.scored} |",
         f"| Success rate | {_percent(report.success_rate)} |",
         f"| Average steps | {report.average_steps:.2f} |",
         f"| Average latency | {report.average_latency_ms:.2f} ms |",
@@ -121,7 +140,12 @@ def render_markdown(report: EvalReport) -> str:
         ]
     )
     for row in report.rows:
-        mark = "yes" if row.passed else "no"
+        if row.passed:
+            mark = "yes"
+        elif row.stop_reason == "rate_limited":
+            mark = "rate limit"
+        else:
+            mark = "no"
         lines.append(
             "| "
             + " | ".join(
@@ -159,10 +183,11 @@ def disclaimer_for(provider: str, search: str) -> str:
             "Mock mode uses the deterministic policy and the offline search fixture. "
             "These numbers are not measurements of Groq, Gemini, or OpenAI."
         )
-    return (
-        f"Hosted run with provider {provider} and search mode {search}. "
-        "Results depend on the model and, when search is live, on the public web."
-    )
+        return (
+            f"Hosted run with provider {provider} and search mode {search}. "
+            "Results depend on the model and, when search is live, on the public web. "
+            "Success rate ignores tasks that stayed rate-limited after retries; those are not model failures."
+        )
 
 
 def _categories(rows: list[TaskResult]) -> dict[str, dict[str, int]]:

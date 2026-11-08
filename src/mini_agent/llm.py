@@ -3,16 +3,65 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 import urllib.error
 import urllib.request
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
+from mini_agent import __version__
 from mini_agent.config import LLMConfig
 from mini_agent.types import LLMResponse, ToolCall
+
+# Cloudflare error 1010 rejects urllib's default Python-urllib User-Agent.
+USER_AGENT = f"mini-agent/{__version__}"
+RETRY_CUSHION_SECONDS = 0.25
+MAX_RETRY_SLEEP_SECONDS = 60.0
+
+_TRY_AGAIN = re.compile(
+    r"try again in\s+([0-9]*\.?[0-9]+)\s*(milliseconds|millisecond|ms|seconds|second|secs|sec|s|minutes|minute|mins|min|m)\b",
+    re.IGNORECASE,
+)
+_DURATION = re.compile(r"([0-9]*\.?[0-9]+)\s*(ms|s|m|h)(?![A-Za-z])", re.IGNORECASE)
+_TOOL_NAME = re.compile(r"attempted to call tool\s+['\"]?([A-Za-z0-9_\-]+)['\"]?", re.IGNORECASE)
+_UNIT_SECONDS = {
+    "ms": 0.001,
+    "milliseconds": 0.001,
+    "millisecond": 0.001,
+    "s": 1.0,
+    "sec": 1.0,
+    "secs": 1.0,
+    "second": 1.0,
+    "seconds": 1.0,
+    "m": 60.0,
+    "min": 60.0,
+    "mins": 60.0,
+    "minute": 60.0,
+    "minutes": 60.0,
+    "h": 3600.0,
+}
 
 
 class LLMError(RuntimeError):
     """The chat-completions call failed or returned something we cannot use."""
+
+
+class RateLimitError(LLMError):
+    """The provider asked us to wait. ``retry_after`` is seconds, when known."""
+
+    def __init__(self, message: str, *, retry_after: float | None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ToolValidationError(LLMError):
+    """The provider rejected a tool name that was not in the request."""
+
+    def __init__(self, message: str, *, tool_name: str) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
 
 
 class LLMClient(Protocol):
@@ -23,23 +72,77 @@ class LLMClient(Protocol):
 
 
 Transport = Any
+Sleeper = Any
+Clock = Any
 
 
 class OpenAICompatibleClient:
     """POST ``{base_url}/chat/completions`` and parse tool calls.
 
     Groq, Gemini's OpenAI-compatible endpoint, and OpenAI itself all speak
-    this shape. The transport is injectable so tests never open a socket.
+    this shape. The transport, clock, and sleep function are injectable so
+    tests never open a socket or wait on a rate limit.
+
+    A 429 is retried. The wait is the provider's Retry-After or rate-limit
+    reset hint when one is present, and that wait becomes the minimum gap
+    before later calls on this client. The eval reuses one client, so a
+    free-tier run slows down instead of failing the rest of the tasks.
+
+    Some Groq models emit a tool named ``json`` that was not in the request.
+    Groq then rejects the whole call with HTTP 400. That turn is retried
+    once with a correction naming the registered tools. The caller's message
+    list is not modified.
     """
 
-    def __init__(self, config: LLMConfig, transport: Transport | None = None) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        transport: Transport | None = None,
+        *,
+        sleep: Sleeper | None = None,
+        clock: Clock | None = None,
+    ) -> None:
         if not config.api_key:
             raise LLMError("LLM API key is empty.")
         self.model = config.model
         self._config = config
         self._transport = transport or urllib_transport
+        self._sleep = sleep or time.sleep
+        self._clock = clock or time.monotonic
+        self._min_interval = max(0.0, config.min_interval)
+        self._max_retries = max(0, config.max_retries)
+        self._last_request_at = 0.0
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> LLMResponse:
+        outgoing = list(messages)
+        corrected = False
+        rate_attempts = 0
+        while True:
+            self._wait_for_pace()
+            try:
+                body = self._post(outgoing, tools)
+            except ToolValidationError as exc:
+                self._mark_request()
+                if corrected:
+                    raise LLMError(str(exc)) from exc
+                corrected = True
+                outgoing = [*outgoing, {"role": "user", "content": _tool_correction(exc.tool_name, tools)}]
+                continue
+            except RateLimitError as exc:
+                self._mark_request()
+                delay = retry_delay(exc.retry_after, rate_attempts)
+                self._min_interval = max(self._min_interval, delay)
+                if rate_attempts >= self._max_retries:
+                    raise
+                rate_attempts += 1
+                self._sleep(delay)
+                # The retry wait already satisfied the pace for the next try.
+                self._last_request_at = self._clock() - self._min_interval
+                continue
+            self._mark_request()
+            return parse_chat_response(body)
+
+    def _post(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": messages,
@@ -54,9 +157,19 @@ class OpenAICompatibleClient:
             "Authorization": f"Bearer {self._config.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": USER_AGENT,
         }
-        body = self._transport(url, headers, payload, self._config.timeout)
-        return parse_chat_response(body)
+        return self._transport(url, headers, payload, self._config.timeout)
+
+    def _wait_for_pace(self) -> None:
+        if self._min_interval <= 0 or self._last_request_at <= 0:
+            return
+        remaining = self._min_interval - (self._clock() - self._last_request_at)
+        if remaining > 0.001:
+            self._sleep(remaining)
+
+    def _mark_request(self) -> None:
+        self._last_request_at = self._clock()
 
 
 def urllib_transport(
@@ -72,8 +185,7 @@ def urllib_transport(
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        message = error_message(detail) or str(exc.reason)
-        raise LLMError(f"LLM request failed ({exc.code}): {message}") from exc
+        raise _http_error(exc.code, detail, getattr(exc, "headers", None), str(exc.reason)) from exc
     except urllib.error.URLError as exc:
         raise LLMError(f"LLM request failed: {exc.reason}") from exc
     try:
@@ -120,6 +232,111 @@ def error_message(detail: str | dict[str, Any]) -> str:
     if isinstance(parsed, dict):
         return error_message(parsed)
     return detail.strip()[:500]
+
+
+def retry_after_seconds(headers: Any, body: str) -> float | None:
+    """Longest wait hinted by headers or by 'try again in …' in the body."""
+
+    candidates: list[float] = []
+    for name in ("Retry-After", "x-ratelimit-reset-tokens", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
+        raw = _header_value(headers, name)
+        if raw:
+            parsed = _parse_delay_token(raw)
+            if parsed is not None:
+                candidates.append(parsed)
+    for match in _TRY_AGAIN.finditer(body or ""):
+        candidates.append(float(match.group(1)) * _UNIT_SECONDS[match.group(2).lower()])
+    if not candidates:
+        return None
+    return max(0.0, max(candidates))
+
+
+def retry_delay(retry_after: float | None, attempt: int) -> float:
+    """Seconds to sleep before the next try. Always at least a short backoff."""
+
+    if retry_after is None:
+        base = min(2**attempt, 30.0)
+    else:
+        base = retry_after + RETRY_CUSHION_SECONDS
+    return min(MAX_RETRY_SLEEP_SECONDS, max(0.0, base))
+
+
+def is_tool_validation_error(detail: str) -> bool:
+    text = error_message(detail).lower()
+    return "tool call validation failed" in text or "not in request.tools" in text
+
+
+def tool_name_from_validation_error(detail: str) -> str | None:
+    match = _TOOL_NAME.search(error_message(detail))
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _http_error(code: int, detail: str, headers: Any, reason: str) -> LLMError:
+    message = error_message(detail) or reason
+    if code == 429:
+        return RateLimitError(
+            f"LLM request failed (429): {message}",
+            retry_after=retry_after_seconds(headers, detail),
+        )
+    if code == 400 and is_tool_validation_error(detail):
+        return ToolValidationError(
+            f"LLM request failed (400): {message}",
+            tool_name=tool_name_from_validation_error(detail) or "unknown",
+        )
+    return LLMError(f"LLM request failed ({code}): {message}")
+
+
+def _tool_correction(tool_name: str, tools: list[dict[str, Any]]) -> str:
+    names: list[str] = []
+    for tool in tools:
+        function = tool.get("function") or {}
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    available = ", ".join(names) if names else "(none)"
+    return (
+        f"The provider rejected a call to tool {tool_name!r} because it is not in this request. "
+        f"Available tools: {available}. "
+        "Call one of those, or answer in text. Do not call a tool named json."
+    )
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    if not headers:
+        return None
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    value = getter(name)
+    if value:
+        return str(value)
+    if isinstance(headers, dict):
+        for key, item in headers.items():
+            if str(key).lower() == name.lower() and item:
+                return str(item)
+    return None
+
+
+def _parse_delay_token(value: str) -> float | None:
+    text = value.strip()
+    if not text:
+        return None
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+        return float(text)
+    spans = list(_DURATION.finditer(text))
+    if spans and "".join(text[span.start() : span.end()] for span in spans) == "".join(text.split()):
+        return sum(float(span.group(1)) * _UNIT_SECONDS[span.group(2).lower()] for span in spans)
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, parsed.timestamp() - time.time())
 
 
 def _parse_tool_call(raw_call: Any, index: int) -> ToolCall | None:

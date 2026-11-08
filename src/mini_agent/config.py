@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# llama-3.3-70b-versatile returns 404 on current Groq accounts.
+# qwen/qwen3.8-27b is on the live model list and tool-calls cleanly.
+GROQ_MODEL = "qwen/qwen3.8-27b"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GEMINI_MODEL = "gemini-3.8-flash"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -16,6 +18,8 @@ OPENAI_MODEL = "gpt-4.1-mini"
 
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_MAX_TOKENS = 1024
+DEFAULT_MIN_INTERVAL = 0.0
+DEFAULT_MAX_RETRIES = 8
 
 
 class ConfigError(RuntimeError):
@@ -44,6 +48,8 @@ class LLMConfig:
     api_key: str
     timeout: float
     max_tokens: int
+    min_interval: float = DEFAULT_MIN_INTERVAL
+    max_retries: int = DEFAULT_MAX_RETRIES
 
 
 def load_dotenv_file(
@@ -93,6 +99,8 @@ def load_config(provider: str | None = None) -> LLMConfig:
             api_key="",
             timeout=_timeout(),
             max_tokens=_max_tokens(),
+            min_interval=_min_interval(),
+            max_retries=_max_retries(),
         )
     if requested not in {"groq", "gemini", "openai", "custom"}:
         known = ", ".join(["auto", "mock", *PRESETS, "custom"])
@@ -105,7 +113,16 @@ def load_config(provider: str | None = None) -> LLMConfig:
         key = os.getenv("LLM_API_KEY", "").strip()
         if not key:
             raise ConfigError("Custom provider requires LLM_API_KEY.")
-        return LLMConfig(requested, base_url, model, key, _timeout(), _max_tokens())
+        return LLMConfig(
+            requested,
+            base_url,
+            model,
+            key,
+            _timeout(),
+            _max_tokens(),
+            _min_interval(),
+            _max_retries(),
+        )
 
     preset = PRESETS[requested]
     base_url = os.getenv("LLM_BASE_URL", "").strip() or preset.base_url
@@ -117,7 +134,16 @@ def load_config(provider: str | None = None) -> LLMConfig:
             f"Export {preset.key_env} or LLM_API_KEY. "
             "To run offline, use --provider mock."
         )
-    return LLMConfig(requested, base_url, model, key, _timeout(), _max_tokens())
+    return LLMConfig(
+        requested,
+        base_url,
+        model,
+        key,
+        _timeout(),
+        _max_tokens(),
+        _min_interval(),
+        _max_retries(),
+    )
 
 
 def resolve_search(requested: str, *, provider: str) -> str:
@@ -168,6 +194,32 @@ def _timeout() -> float:
         raise ConfigError("LLM_TIMEOUT must be a number of seconds.") from exc
     if value <= 0:
         raise ConfigError("LLM_TIMEOUT must be positive.")
+    return value
+
+
+def _min_interval() -> float:
+    raw = os.getenv("LLM_MIN_INTERVAL", "").strip()
+    if not raw:
+        return DEFAULT_MIN_INTERVAL
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError("LLM_MIN_INTERVAL must be a number of seconds.") from exc
+    if value < 0:
+        raise ConfigError("LLM_MIN_INTERVAL must be zero or positive.")
+    return value
+
+
+def _max_retries() -> int:
+    raw = os.getenv("LLM_MAX_RETRIES", "").strip()
+    if not raw:
+        return DEFAULT_MAX_RETRIES
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError("LLM_MAX_RETRIES must be an integer.") from exc
+    if value < 0:
+        raise ConfigError("LLM_MAX_RETRIES must be zero or positive.")
     return value
 
 

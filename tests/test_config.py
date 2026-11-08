@@ -31,6 +31,7 @@ def test_groq_key_fallback_and_default_model(monkeypatch: pytest.MonkeyPatch) ->
     assert config.provider == "groq"
     assert config.api_key == "gsk-test"
     assert config.base_url == GROQ_BASE_URL
+    assert GROQ_MODEL == "qwen/qwen3.8-27b"
     assert config.model == GROQ_MODEL
 
 
