@@ -1,6 +1,6 @@
 # mini-agent
 
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)](.github/workflows/ci.yml)
+[![CI](https://github.com/kfairy9999/mini-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/kfairy9999/mini-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](pyproject.toml)
 
@@ -248,6 +248,10 @@ These are the failures from bringing the loop up on a real Groq free-tier key, a
 **The backoff read the wrong bucket.** A token-limit 429 still carried `x-ratelimit-reset-requests: 38m52.8s` beside `x-ratelimit-reset-tokens: 134ms`. Taking the longest hint turned a millisecond token reset into a 60-second sleep before every later call, and one run sat in sleep for 28 minutes. The wait now follows the explicit retry hint, or the reset header for the bucket the error names. One sleep is capped by `LLM_MAX_WAIT` (default 60 seconds).
 
 **The first partial checkpoint crashed the hosted run.** After `math-multiply-add` passed, writing the in-progress report raised `TypeError` in `"\n".join`: the hosted disclaimer `return` was indented inside the mock branch, so a Groq report stored `disclaimer=None`. Mock tests never rendered that path. The hosted string is returned for every other provider, missing fields are written as empty text, and a fake Groq config now walks the full checkpoint path in tests.
+
+## How it was built
+
+I designed and directed this project and built it with AI coding agents: I set the requirements, ran it against a real hosted model, found the failures described above, and drove each fix. Working this way is part of the point, since it is the kind of agentic workflow this project is about.
 
 ## Design decisions
 
