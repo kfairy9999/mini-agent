@@ -6,6 +6,14 @@
 
 mini-agent is a Python 3.11 tool-calling loop Kevin Fairley wrote for agentic AI roles. The model may ask for a calculator, a short Python program, or a web search; this process is the only thing that runs the tool; and a draft is not returned until a self-check accepts or revises it. The same loop runs offline with no key, and a 15-task eval has a measured Groq result: `qwen/qwen3.8-27b`, fixture search, 14 of 15 on 2026-11-08.
 
+## See it run
+
+No install needed to see it work. This is a real terminal run, recorded November 10, 2026, with the offline mock policy, so no API key and no network: the calculator, the Python sandbox, and a search that finds nothing and says so instead of inventing an answer. The hosted Groq result (14 of 15) is in [Evaluation](#evaluation). [Plain-text copy](docs/demo-run.txt).
+
+![Terminal run of mini-agent in mock mode: three questions, each with act, observe, draft, and reflect steps.](docs/demo-run.png)
+
+The same day, `pytest` passed 78 tests and `mini-agent-eval` (mock) passed 15 of 15.
+
 ## Architecture
 
 ```mermaid
