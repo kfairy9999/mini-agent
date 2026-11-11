@@ -1,0 +1,80 @@
+$ mini-agent --mock "What is (17 * 23) + 5?"
+╭────────────────────────────── mini-agent  mock ──────────────────────────────╮
+│ What is (17 * 23) + 5?                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+step 1  act
+The question is arithmetic, so I'll evaluate it with the calculator.
+call calculator
+{"expression": "(17 * 23) + 5"}
+observe
+396
+
+step 2  draft
+396
+
+step 3  reflect  accept
+The draft is grounded in the latest tool observation.
+
+╭─────────────────────────────────── answer ───────────────────────────────────╮
+│ 396                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+3 steps · 0.2 ms · reflected
+
+$ mini-agent --mock "Use Python to compute the 10th Fibonacci number. The sequence starts 1, 1, 2, 3, 5."
+╭────────────────────────────── mini-agent  mock ──────────────────────────────╮
+│ Use Python to compute the 10th Fibonacci number. The sequence starts 1, 1,   │
+│ 2, 3, 5.                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+step 1  act
+This needs a short program, so I'll run it in the Python sandbox.
+call python
+def fib(n):
+    if n <= 2:
+        return 1
+    a, b = 1, 1
+    for _ in range(n - 2):
+        a, b = b, a + b
+    return b
+print(fib(10))
+observe
+exit_code: 0
+--- stdout ---
+55
+
+--- stderr ---
+
+
+step 2  draft
+55
+
+step 3  reflect  accept
+The draft is grounded in the latest tool observation.
+
+╭─────────────────────────────────── answer ───────────────────────────────────╮
+│ 55                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+3 steps · 11 ms · reflected
+
+$ mini-agent --mock "What is the capital of Atlantis?"
+╭────────────────────────────── mini-agent  mock ──────────────────────────────╮
+│ What is the capital of Atlantis?                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+step 1  act
+This is a factual lookup, so I'll search and answer from the snippets.
+call web_search
+{"query": "What is the capital of Atlantis?", "max_results": 3}
+observe
+No results.
+source: fixture
+
+step 2  draft
+I could not find a sourced answer in the search results.
+
+step 3  reflect  accept
+The draft reports the tool outcome instead of inventing an answer.
+
+╭─────────────────────────────────── answer ───────────────────────────────────╮
+│ I could not find a sourced answer in the search results.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+3 steps · 0.1 ms · reflected
+(exit code 0)
